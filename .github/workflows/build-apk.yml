@@ -1,0 +1,71 @@
+name: Build Spotify APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Prepare web files
+        run: |
+          test -f work.html || { echo "work.html is missing from the repo root"; exit 1; }
+          mkdir -p www
+          cp work.html www/index.html
+
+      - name: Create Capacitor project
+        run: |
+          npm init -y
+          npm install @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
+          npx cap init "Spotify" "com.myspotify.app" --web-dir www
+          npx cap add android
+          chmod +x android/gradlew
+
+      - name: Set app logo (taken from the site's own icon)
+        run: |
+          pip install pillow
+          python3 - <<'PY'
+          import re, base64, io, os, shutil
+          from PIL import Image
+          s = open("work.html", encoding="utf-8", errors="ignore").read()
+          m = re.search(r'<link rel="icon"[^>]*href="data:image/png;base64,([^"]+)"', s)
+          img = Image.open(io.BytesIO(base64.b64decode(m.group(1)))).convert("RGBA")
+          res = "android/app/src/main/res"
+          shutil.rmtree(res + "/mipmap-anydpi-v26", ignore_errors=True)
+          sizes = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+          for k, px in sizes.items():
+              d = f"{res}/mipmap-{k}"
+              os.makedirs(d, exist_ok=True)
+              icon = img.resize((px, px), Image.LANCZOS)
+              for name in ("ic_launcher.png", "ic_launcher_round.png", "ic_launcher_foreground.png"):
+                  icon.save(f"{d}/{name}")
+          PY
+
+      - name: Dark background while loading
+        run: |
+          node -e "const f='capacitor.config.json';const c=require('./'+f);c.backgroundColor='#0d0308';require('fs').writeFileSync(f,JSON.stringify(c,null,2))"
+          npx cap sync android
+
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk Spotify.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Spotify-APK
+          path: Spotify.apk
